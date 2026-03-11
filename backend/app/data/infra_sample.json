@@ -1,0 +1,50 @@
+{
+  "account": {
+    "account_id": "111122223333",
+    "region": "us-east-1",
+    "environment": "prod"
+  },
+  "services": {
+    "ec2": [
+      {
+        "name": "web-1",
+        "instance_type": "t3.large",
+        "az": "us-east-1a",
+        "cpu_utilization_pct_p50": 12,
+        "cpu_utilization_pct_p95": 28,
+        "memory_utilization_pct_p95": 35,
+        "monthly_cost_usd": 320.5,
+        "autoscaling_group": null,
+        "tags": { "service": "web", "owner": "team-a" }
+      }
+    ],
+    "rds": [
+      {
+        "name": "rds-primary",
+        "engine": "postgres",
+        "multi_az": false,
+        "storage_encrypted": true,
+        "monthly_cost_usd": 410.0,
+        "cpu_utilization_pct_p95": 55
+      }
+    ],
+    "s3": [
+      {
+        "name": "uploads",
+        "public_access_block": true,
+        "default_encryption": false,
+        "monthly_cost_usd": 45.2
+      }
+    ]
+  },
+  "traffic": {
+    "avg_requests_per_min": 1200,
+    "peak_multiplier": 3.2,
+    "peak_duration_min": 20
+  },
+  "constraints": {
+    "target_uptime": "99.99",
+    "max_budget_usd_per_month": 1500
+  },
+  "known_risks": ["single_az_deployment", "no_autoscaling"]
+}

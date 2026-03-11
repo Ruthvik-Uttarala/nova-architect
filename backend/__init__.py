@@ -1,0 +1,2 @@
+"""NovaArchitect backend package."""
+
