@@ -18,9 +18,51 @@ def _clamp_risk(value: float) -> float:
 
 def _iter_services(snapshot: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
     services = snapshot.get("services", [])
+    collected = []
     if isinstance(services, list):
-        return [svc for svc in services if isinstance(svc, dict)]
-    return []
+        collected.extend(svc for svc in services if isinstance(svc, dict))
+    elif isinstance(services, dict):
+        for value in services.values():
+            if isinstance(value, list):
+                collected.extend(svc for svc in value if isinstance(svc, dict))
+            elif isinstance(value, dict):
+                collected.append(value)
+    return collected
+
+
+def _known_risk_present(snapshot: Dict[str, Any], risk_name: str) -> bool:
+    if bool(snapshot.get(risk_name, False)):
+        return True
+    known_risks = snapshot.get("known_risks", [])
+    return isinstance(known_risks, list) and risk_name in known_risks
+
+
+def _peak_multiplier(snapshot: Dict[str, Any]) -> float:
+    traffic = snapshot.get("traffic", {})
+    if isinstance(traffic, dict) and "peak_multiplier" in traffic:
+        return _as_float(traffic.get("peak_multiplier"), 1.0)
+    return _as_float(snapshot.get("peak_multiplier", 1.0), 1.0)
+
+
+def _has_unencrypted_s3(snapshot: Dict[str, Any]) -> bool:
+    s3_cfg = snapshot.get("s3", {})
+    if isinstance(s3_cfg, dict) and s3_cfg.get("default_encryption") is False:
+        return True
+    if isinstance(s3_cfg, list):
+        for entry in s3_cfg:
+            if isinstance(entry, dict) and entry.get("default_encryption") is False:
+                return True
+
+    services = snapshot.get("services", {})
+    if isinstance(services, dict):
+        s3_services = services.get("s3", [])
+        if isinstance(s3_services, dict):
+            s3_services = [s3_services]
+        if isinstance(s3_services, list):
+            for entry in s3_services:
+                if isinstance(entry, dict) and entry.get("default_encryption") is False:
+                    return True
+    return False
 
 
 def calculate_baseline_metrics(snapshot: Dict[str, Any]) -> PlanMetrics:
@@ -29,15 +71,14 @@ def calculate_baseline_metrics(snapshot: Dict[str, Any]) -> PlanMetrics:
     uptime_risk = 0.0
     security_risk = 0.0
 
-    if bool(snapshot.get("single_az_deployment", False)):
+    if _known_risk_present(snapshot, "single_az_deployment"):
         uptime_risk += 3.0
 
-    peak_multiplier = _as_float(snapshot.get("peak_multiplier", 1.0), 1.0)
-    if bool(snapshot.get("no_autoscaling", False)) and peak_multiplier > 2.0:
+    peak_multiplier = _peak_multiplier(snapshot)
+    if _known_risk_present(snapshot, "no_autoscaling") and peak_multiplier > 2.0:
         uptime_risk += 2.0
 
-    s3_cfg = snapshot.get("s3", {})
-    if isinstance(s3_cfg, dict) and s3_cfg.get("default_encryption") is False:
+    if _has_unencrypted_s3(snapshot):
         security_risk += 3.0
 
     return PlanMetrics(

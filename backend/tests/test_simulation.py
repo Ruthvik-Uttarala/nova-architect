@@ -19,6 +19,24 @@ def _snapshot_fixture() -> dict:
     }
 
 
+def _report_snapshot_fixture() -> dict:
+    return {
+        "services": {
+            "ec2": [
+                {"name": "web-1", "monthly_cost_usd": 320.5},
+            ],
+            "rds": [
+                {"name": "rds-primary", "monthly_cost_usd": 410.0},
+            ],
+            "s3": [
+                {"name": "uploads", "monthly_cost_usd": 45.2, "default_encryption": False},
+            ],
+        },
+        "traffic": {"peak_multiplier": 3.2},
+        "known_risks": ["single_az_deployment", "no_autoscaling"],
+    }
+
+
 def _plan_fixture() -> Plan:
     return Plan.model_validate(
         {
@@ -57,4 +75,22 @@ def test_run_simulation_outputs_deterministic_cost_and_scenarios() -> None:
     assert simulation.scenarios[1].after["outage_minutes"] == pytest.approx(2.0)
     assert simulation.risk.uptime_risk_before_0_to_10 == pytest.approx(5.0)
     assert simulation.risk.uptime_risk_after_0_to_10 == pytest.approx(2.0)
+    assert simulation.cost.delta_usd_per_month == pytest.approx(
+        simulation.cost.monthly_cost_after_estimate - simulation.cost.monthly_cost_before
+    )
+
+
+def test_report_shaped_snapshot_baseline_is_computed_correctly() -> None:
+    baseline = calculate_baseline_metrics(_report_snapshot_fixture())
+    assert baseline.monthly_cost_before == pytest.approx(775.7)
+    assert baseline.uptime_risk_before_0_to_10 == pytest.approx(5.0)
+    assert baseline.security_risk_before_0_to_10 == pytest.approx(3.0)
+
+    simulation = run_simulation(_report_snapshot_fixture(), _plan_fixture())
+    assert simulation.cost.monthly_cost_before == pytest.approx(775.7)
+    assert simulation.risk.uptime_risk_before_0_to_10 == pytest.approx(5.0)
+    assert simulation.risk.security_risk_before_0_to_10 == pytest.approx(3.0)
+    assert simulation.cost.delta_usd_per_month == pytest.approx(
+        simulation.cost.monthly_cost_after_estimate - simulation.cost.monthly_cost_before
+    )
 

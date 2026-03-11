@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -95,12 +95,26 @@ class AnalyzeRequest(BaseModel):
     goal: str
 
 
+AnalyzeMode = Literal["live_bedrock", "fallback"]
+
+
+class AnalyzeMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str
+    aws_region: str
+    analyze_mode: AnalyzeMode
+    parse_retries_used: int
+    used_fallback: bool
+
+
 class AnalyzeResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan: Plan
     simulation: Simulation
     used_fallback: bool
+    analyze_metadata: Optional[AnalyzeMetadata] = None
 
 
 ApplyStatus = Literal["success", "partial", "failed"]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
 import boto3
@@ -56,6 +57,33 @@ def try_parse_json(text: str) -> Optional[Dict[str, Any]]:
         return payload if isinstance(payload, dict) else None
     except json.JSONDecodeError:
         return None
+
+
+def build_fallback_plan(snapshot: Dict[str, Any], reason: str) -> Plan:
+    baseline = calculate_baseline_metrics(snapshot)
+    fallback = {
+        "analysis_summary": f"Fallback response used due to model output validation failure: {reason}",
+        "identified_issues": [],
+        "optimization_plan": [],
+        "tradeoffs": [],
+        "metrics": {
+            "monthly_cost_before": float(baseline.monthly_cost_before),
+            "monthly_cost_after_estimate": float(baseline.monthly_cost_before),
+            "uptime_risk_before_0_to_10": float(baseline.uptime_risk_before_0_to_10),
+            "uptime_risk_after_0_to_10": float(baseline.uptime_risk_before_0_to_10),
+            "security_risk_before_0_to_10": float(baseline.security_risk_before_0_to_10),
+            "security_risk_after_0_to_10": float(baseline.security_risk_before_0_to_10),
+        },
+    }
+    return Plan.model_validate(fallback)
+
+
+@dataclass
+class AnalyzeResult:
+    plan: Plan
+    used_fallback: bool
+    parse_retries_used: int
+    failure_reason: str
 
 
 class BedrockNovaAgent:
@@ -113,37 +141,26 @@ class BedrockNovaAgent:
         return self._extract_text(response)
 
     def _build_fallback_plan(self, snapshot: Dict[str, Any], reason: str) -> Plan:
-        baseline = calculate_baseline_metrics(snapshot)
-        fallback = {
-            "analysis_summary": f"Fallback response used due to model output validation failure: {reason}",
-            "identified_issues": [],
-            "optimization_plan": [],
-            "tradeoffs": [],
-            "metrics": {
-                "monthly_cost_before": float(baseline.monthly_cost_before),
-                "monthly_cost_after_estimate": float(baseline.monthly_cost_before),
-                "uptime_risk_before_0_to_10": float(baseline.uptime_risk_before_0_to_10),
-                "uptime_risk_after_0_to_10": float(baseline.uptime_risk_before_0_to_10),
-                "security_risk_before_0_to_10": float(baseline.security_risk_before_0_to_10),
-                "security_risk_after_0_to_10": float(baseline.security_risk_before_0_to_10),
-            },
-        }
-        return Plan.model_validate(fallback)
+        return build_fallback_plan(snapshot, reason)
 
-    def analyze(
+    def analyze_detailed(
         self,
         *,
         system_text: str,
         user_text: str,
         snapshot: Dict[str, Any],
-    ) -> Tuple[Plan, bool]:
+    ) -> AnalyzeResult:
         failures = []
+        parse_retries_used = 0
         system_attempts = [
             system_text,
             f"{system_text}\n{RETRY_SYSTEM_SUFFIX}",
         ]
 
         for attempt_idx in range(2):
+            if attempt_idx == 1:
+                parse_retries_used = 1
+
             try:
                 raw_text = self._invoke_converse(system_attempts[attempt_idx], user_text)
             except Exception as exc:  # pragma: no cover - exception types vary by runtime
@@ -157,11 +174,31 @@ class BedrockNovaAgent:
 
             try:
                 plan = Plan.model_validate(parsed)
-                return plan, False
+                return AnalyzeResult(
+                    plan=plan,
+                    used_fallback=False,
+                    parse_retries_used=parse_retries_used,
+                    failure_reason="",
+                )
             except ValidationError as exc:
                 failures.append(f"attempt {attempt_idx + 1} schema-invalid: {exc.errors()[0]['type']}")
                 continue
 
         reason = "; ".join(failures) if failures else "unknown_error"
-        return self._build_fallback_plan(snapshot, reason), True
+        return AnalyzeResult(
+            plan=self._build_fallback_plan(snapshot, reason),
+            used_fallback=True,
+            parse_retries_used=parse_retries_used,
+            failure_reason=reason,
+        )
+
+    def analyze(
+        self,
+        *,
+        system_text: str,
+        user_text: str,
+        snapshot: Dict[str, Any],
+    ) -> Tuple[Plan, bool]:
+        result = self.analyze_detailed(system_text=system_text, user_text=user_text, snapshot=snapshot)
+        return result.plan, result.used_fallback
 
