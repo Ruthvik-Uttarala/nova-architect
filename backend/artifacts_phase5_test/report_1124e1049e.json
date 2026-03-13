@@ -1,6 +1,6 @@
 {
   "report_id": "report_1124e1049e",
-  "generated_at_utc": "2026-03-13T00:57:15.471153+00:00",
+  "generated_at_utc": "2026-03-13T15:46:49.732920+00:00",
   "goal": "Reduce monthly cost safely",
   "executive_summary": "For goal 'Reduce monthly cost safely', NovaArchitect identified 0 issue(s) and proposed 0 action(s). Estimated monthly cost changes from 775.7 to 775.7 (delta 0.0). Uptime risk shifts from 5.0 to 5.0, and security risk shifts from 3.0 to 3.0. Latest apply run status: success (run_id run_4474688004).",
   "highlights": [

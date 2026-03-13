@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -93,6 +93,8 @@ class AnalyzeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     goal: str
+    snapshot_mode: Literal["sample", "live_aws"] = "sample"
+    discovered_snapshot: Optional[Dict[str, Any]] = None
 
 
 AnalyzeMode = Literal["live_bedrock", "fallback"]
@@ -198,3 +200,88 @@ class ReportResponse(BaseModel):
     highlights: List[str]
     artifact_refs: List[ArtifactReference]
     source: Literal["request_payload", "latest_cached", "mixed"]
+
+
+class DiscoveryIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_id: str
+    caller_arn: str
+    principal_type: str
+
+
+class DiscoverySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ec2_count: int
+    rds_count: int
+    s3_count: int
+    autoscaling_count: int
+    partial_failure_count: int
+    cache_hit: bool = False
+
+
+class DiscoverRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    force_refresh: bool = False
+    region: Optional[str] = None
+
+
+class DiscoverResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    identity: DiscoveryIdentity
+    snapshot: Dict[str, Any]
+    summary: DiscoverySummary
+    warnings: List[str]
+    discovery_mode: Literal["live_aws", "fallback"]
+    discovered_at_utc: str
+
+
+ExecutionMode = Literal["aws_api_safe_tag", "aws_console_safe"]
+ExecutionAction = Literal["apply_demo_tag", "remove_demo_tag", "open_console_view"]
+ResourceType = Literal["ec2", "rds", "s3", "autoscaling"]
+ExecutionStatus = Literal["success", "partial", "failed", "blocked"]
+PolicyClassification = Literal["read_only", "reversible_safe", "blocked"]
+
+
+class PolicyDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    classification: PolicyClassification
+    allowed: bool
+    requires_approval: bool
+    reason: str
+    warnings: List[str] = Field(default_factory=list)
+
+
+class ExecuteRealRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_mode: ExecutionMode
+    resource_arn: str
+    resource_type: ResourceType
+    action: ExecutionAction
+    approval_confirmed: bool
+    notes: Optional[str] = None
+
+
+class ExecuteStep(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step: int
+    action: str
+    result: str
+
+
+class ExecuteRealResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    status: ExecutionStatus
+    execution_mode: ExecutionMode
+    steps: List[ExecuteStep]
+    notes: str
+    evidence_refs: List[ArtifactReference] = Field(default_factory=list)
+    policy_decision: PolicyDecision

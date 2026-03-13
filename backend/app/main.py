@@ -20,12 +20,21 @@ from .schemas import (
     ApplyResponse,
     ApplyStep,
     ArtifactReference,
+    DiscoverRequest,
+    DiscoverResponse,
+    ExecuteRealRequest,
+    ExecuteRealResponse,
+    ExecuteStep,
+    PolicyDecision,
     Plan,
     ReportRequest,
     ReportResponse,
     VoiceRequest,
     VoiceResponse,
 )
+from .aws_discovery import discover_live_snapshot
+from .policy_engine import evaluate_policy
+from .real_executor import execute_aws_api_safe_tag, execute_console_safe
 from .sim import run_simulation
 
 load_dotenv()
@@ -83,6 +92,7 @@ DEFAULT_APPLY_ACTIONS = ["resize_instance", "enable_autoscaling", "enable_s3_enc
 _LAST_ANALYZE_RESPONSE: Optional[dict] = None
 _LAST_ANALYZE_GOAL: str = ""
 _LAST_APPLY_RESPONSE: Optional[dict] = None
+_LAST_DISCOVER_RESPONSE: Optional[dict] = None
 
 
 def _normalize_goal(goal: str) -> str:
@@ -343,9 +353,100 @@ def _write_report_artifacts(
     ]
 
 
+def _cache_discover_response(response: DiscoverResponse) -> dict:
+    global _LAST_DISCOVER_RESPONSE
+    payload = response.model_dump()
+    _LAST_DISCOVER_RESPONSE = payload
+    return payload
+
+
+def _discover_live_or_fallback(force_refresh: bool = False, region: Optional[str] = None) -> DiscoverResponse:
+    try:
+        discovered = discover_live_snapshot(force_refresh=force_refresh, region=region)
+        response = DiscoverResponse.model_validate(discovered)
+        _best_effort_log_event(
+            "discover",
+            {
+                "discovery_mode": response.discovery_mode,
+                "account_id": response.identity.account_id,
+                "caller_arn": response.identity.caller_arn,
+                "warnings_count": len(response.warnings),
+                "partial_failures": response.summary.partial_failure_count,
+            },
+        )
+        return response
+    except Exception as exc:
+        sample_snapshot = _load_snapshot()
+        fallback = DiscoverResponse.model_validate(
+            {
+                "identity": {
+                    "account_id": "unknown",
+                    "caller_arn": "unknown",
+                    "principal_type": "unknown",
+                },
+                "snapshot": sample_snapshot,
+                "summary": {
+                    "ec2_count": len(sample_snapshot.get("services", {}).get("ec2", [])),
+                    "rds_count": len(sample_snapshot.get("services", {}).get("rds", [])),
+                    "s3_count": len(sample_snapshot.get("services", {}).get("s3", [])),
+                    "autoscaling_count": 0,
+                    "partial_failure_count": 1,
+                    "cache_hit": False,
+                },
+                "warnings": [f"live_discovery_unavailable:{exc.__class__.__name__}"],
+                "discovery_mode": "fallback",
+                "discovered_at_utc": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        _best_effort_log_event(
+            "discover",
+            {
+                "discovery_mode": "fallback",
+                "account_id": "unknown",
+                "caller_arn": "unknown",
+                "warnings_count": len(fallback.warnings),
+                "partial_failures": fallback.summary.partial_failure_count,
+            },
+        )
+        return fallback
+
+
+def _resolve_analyze_snapshot(request: AnalyzeRequest) -> tuple[dict, List[str]]:
+    warnings: List[str] = []
+    if request.snapshot_mode == "sample":
+        return _load_snapshot(), warnings
+
+    if request.discovered_snapshot is not None:
+        warnings.append("using_client_provided_discovered_snapshot")
+        return request.discovered_snapshot, warnings
+
+    if _LAST_DISCOVER_RESPONSE is not None:
+        try:
+            cached_discover = DiscoverResponse.model_validate(_LAST_DISCOVER_RESPONSE)
+            warnings.extend(cached_discover.warnings)
+            if cached_discover.discovery_mode == "fallback":
+                warnings.append("live_discovery_cache_in_fallback_mode")
+            return cached_discover.snapshot, warnings
+        except Exception:
+            warnings.append("cached_discovery_invalid_recomputing")
+
+    discovered = _discover_live_or_fallback(force_refresh=False, region=None)
+    warnings.extend(discovered.warnings)
+    if discovered.discovery_mode == "fallback":
+        warnings.append("live_discovery_unavailable_using_fallback_snapshot")
+    _cache_discover_response(discovered)
+    return discovered.snapshot, warnings
+
+
 @app.get("/")
 def health() -> dict:
     return {"ok": True}
+
+
+@app.post("/discover", response_model=DiscoverResponse)
+def discover(request: DiscoverRequest) -> dict:
+    response = _discover_live_or_fallback(force_refresh=request.force_refresh, region=request.region)
+    return _cache_discover_response(response)
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -355,7 +456,7 @@ def analyze(request: AnalyzeRequest) -> dict:
         raise HTTPException(status_code=400, detail="goal must not be empty")
 
     try:
-        snapshot = _load_snapshot()
+        snapshot, snapshot_warnings = _resolve_analyze_snapshot(request)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"failed to load infra snapshot: {exc}") from exc
 
@@ -412,6 +513,14 @@ def analyze(request: AnalyzeRequest) -> dict:
         used_fallback=used_fallback,
         analyze_metadata=metadata,
     )
+    if snapshot_warnings:
+        _best_effort_log_event(
+            "analyze_snapshot_mode",
+            {
+                "snapshot_mode": request.snapshot_mode,
+                "warnings": snapshot_warnings,
+            },
+        )
     return _cache_analyze_response(goal, response)
 
 
@@ -528,6 +637,95 @@ def report(request: ReportRequest) -> dict:
         },
     )
     return response_payload
+
+
+@app.post("/execute-real", response_model=ExecuteRealResponse)
+def execute_real(request: ExecuteRealRequest) -> dict:
+    run_seed = (
+        f"{request.execution_mode}|{request.resource_arn}|{request.resource_type}|"
+        f"{request.action}|{request.approval_confirmed}"
+    )
+    run_id = f"run_{hashlib.sha1(run_seed.encode('utf-8')).hexdigest()[:10]}"
+    policy = evaluate_policy(request)
+
+    if not policy.allowed:
+        blocked = ExecuteRealResponse(
+            run_id=run_id,
+            status="blocked",
+            execution_mode=request.execution_mode,
+            steps=[ExecuteStep(step=1, action="policy_check", result=f"blocked:{policy.reason}")],
+            notes=f"Execution blocked by policy: {policy.reason}",
+            evidence_refs=[],
+            policy_decision=policy,
+        )
+        payload = blocked.model_dump()
+        _best_effort_log_event(
+            "execute_real",
+            {
+                "run_id": run_id,
+                "resource_arn": request.resource_arn,
+                "resource_type": request.resource_type,
+                "action": request.action,
+                "execution_mode": request.execution_mode,
+                "approval_confirmed": request.approval_confirmed,
+                "status": payload["status"],
+                "policy_reason": policy.reason,
+            },
+        )
+        return payload
+
+    region_name = os.getenv("AWS_REGION", DEFAULT_REGION)
+    try:
+        if request.execution_mode == "aws_api_safe_tag":
+            result = execute_aws_api_safe_tag(
+                request=request,
+                run_id=run_id,
+                region_name=region_name,
+                artifact_dir=_artifact_dir(),
+            )
+        else:
+            result = execute_console_safe(
+                request=request,
+                run_id=run_id,
+                region_name=region_name,
+                artifact_dir=_artifact_dir(),
+            )
+    except Exception as exc:
+        result = {
+            "status": "failed",
+            "steps": [{"step": 1, "action": "execute_real", "result": f"failed:{exc.__class__.__name__}"}],
+            "notes": "Execution failed before completion.",
+            "evidence_refs": [],
+        }
+
+    evidence_refs = [ref.model_dump() if hasattr(ref, "model_dump") else ref for ref in result.get("evidence_refs", [])]
+    response = ExecuteRealResponse(
+        run_id=run_id,
+        status=result.get("status", "failed"),
+        execution_mode=request.execution_mode,
+        steps=[
+            ExecuteStep.model_validate(step)
+            for step in result.get("steps", [{"step": 1, "action": "execute_real", "result": "failed:unknown"}])
+        ],
+        notes=result.get("notes", "Execution completed."),
+        evidence_refs=[ArtifactReference.model_validate(ref) for ref in evidence_refs],
+        policy_decision=PolicyDecision.model_validate(policy.model_dump()),
+    )
+    payload = response.model_dump()
+    _best_effort_log_event(
+        "execute_real",
+        {
+            "run_id": run_id,
+            "resource_arn": request.resource_arn,
+            "resource_type": request.resource_type,
+            "action": request.action,
+            "execution_mode": request.execution_mode,
+            "approval_confirmed": request.approval_confirmed,
+            "status": payload["status"],
+            "policy_reason": policy.reason,
+        },
+    )
+    return payload
 
 
 @app.post("/apply", response_model=ApplyResponse)
