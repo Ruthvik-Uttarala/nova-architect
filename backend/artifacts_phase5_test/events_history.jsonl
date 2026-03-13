@@ -1,0 +1,4 @@
+{"timestamp_utc": "2026-03-13T00:57:15.445706+00:00", "event_type": "analyze", "payload": {"goal": "Reduce monthly cost safely", "model_id": "us.amazon.nova-2-lite-v1:0", "aws_region": "us-east-1", "analyze_mode": "fallback", "parse_retries_used": 0, "used_fallback": true}}
+{"timestamp_utc": "2026-03-13T00:57:15.452491+00:00", "event_type": "apply", "payload": {"run_id": "run_4474688004", "status": "success", "steps_count": 4}}
+{"timestamp_utc": "2026-03-13T00:57:15.463623+00:00", "event_type": "report", "payload": {"report_id": "report_1124e1049e", "goal": "Reduce monthly cost safely", "source": "latest_cached", "artifact_count": 2}}
+{"timestamp_utc": "2026-03-13T00:57:15.473992+00:00", "event_type": "report", "payload": {"report_id": "report_1124e1049e", "goal": "Reduce monthly cost safely", "source": "latest_cached", "artifact_count": 2}}

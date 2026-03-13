@@ -1,0 +1,99 @@
+{
+  "report_id": "report_1124e1049e",
+  "generated_at_utc": "2026-03-13T00:57:15.471153+00:00",
+  "goal": "Reduce monthly cost safely",
+  "executive_summary": "For goal 'Reduce monthly cost safely', NovaArchitect identified 0 issue(s) and proposed 0 action(s). Estimated monthly cost changes from 775.7 to 775.7 (delta 0.0). Uptime risk shifts from 5.0 to 5.0, and security risk shifts from 3.0 to 3.0. Latest apply run status: success (run_id run_4474688004).",
+  "highlights": [
+    "Analysis summary: Fallback response used due to model output validation failure: live_bedrock_disabled",
+    "Top issues: none",
+    "Recommended actions: none",
+    "Cost view: 775.7 -> 775.7 (delta 0.0)",
+    "Latest apply run: success (run_4474688004)"
+  ],
+  "analysis": {
+    "plan": {
+      "analysis_summary": "Fallback response used due to model output validation failure: live_bedrock_disabled",
+      "identified_issues": [],
+      "optimization_plan": [],
+      "tradeoffs": [],
+      "metrics": {
+        "monthly_cost_before": 775.7,
+        "monthly_cost_after_estimate": 775.7,
+        "uptime_risk_before_0_to_10": 5.0,
+        "uptime_risk_after_0_to_10": 5.0,
+        "security_risk_before_0_to_10": 3.0,
+        "security_risk_after_0_to_10": 3.0
+      }
+    },
+    "simulation": {
+      "scenarios": [
+        {
+          "name": "traffic_spike_3x",
+          "baseline": {
+            "error_rate_percent": 4.2,
+            "latency_ms": 680.0
+          },
+          "after": {
+            "error_rate_percent": 0.7,
+            "latency_ms": 240.0
+          }
+        },
+        {
+          "name": "single_instance_failure",
+          "baseline": {
+            "outage_minutes": 18.0
+          },
+          "after": {
+            "outage_minutes": 2.0
+          }
+        }
+      ],
+      "cost": {
+        "monthly_cost_before": 775.7,
+        "monthly_cost_after_estimate": 775.7,
+        "delta_usd_per_month": 0.0
+      },
+      "risk": {
+        "uptime_risk_before_0_to_10": 5.0,
+        "uptime_risk_after_0_to_10": 5.0,
+        "security_risk_before_0_to_10": 3.0,
+        "security_risk_after_0_to_10": 3.0
+      }
+    },
+    "used_fallback": true,
+    "analyze_metadata": {
+      "model_id": "us.amazon.nova-2-lite-v1:0",
+      "aws_region": "us-east-1",
+      "analyze_mode": "fallback",
+      "parse_retries_used": 0,
+      "used_fallback": true
+    }
+  },
+  "apply": {
+    "run_id": "run_4474688004",
+    "status": "success",
+    "steps": [
+      {
+        "step": 1,
+        "action": "open_console",
+        "result": "ok"
+      },
+      {
+        "step": 2,
+        "action": "resize_instance",
+        "result": "ok"
+      },
+      {
+        "step": 3,
+        "action": "enable_autoscaling",
+        "result": "ok"
+      },
+      {
+        "step": 4,
+        "action": "enable_s3_encryption",
+        "result": "ok"
+      }
+    ],
+    "notes": "Simulated execution completed for all requested actions."
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "report_id": "report_81932aa613",
+  "generated_at_utc": "2026-03-13T01:20:38.836097+00:00",
+  "goal": "Hey how are you",
+  "executive_summary": "For goal 'Hey how are you', NovaArchitect identified 3 issue(s) and proposed 3 action(s). Estimated monthly cost changes from 775.7 to 985.7 (delta 210.0). Uptime risk shifts from 5.0 to 3.0, and security risk shifts from 3.0 to 3.0. Latest apply run status: success (run_id run_4474688004).",
+  "highlights": [
+    "Analysis summary: Current infrastructure shows moderate cost efficiency but has notable risks around availability and scalability. The RDS instance is over-provisioned relative to traffic patterns, and the lack of autoscaling exposes the system to potential downtime under load.",
+    "Top issues: Single AZ deployment for both EC2 and RDS, No autoscaling configured for EC2, S3 bucket lacks default encryption",
+    "Recommended actions: Implement EC2 autoscaling group, Enable RDS Multi-AZ deployment, Enable default encryption on S3 bucket",
+    "Cost view: 775.7 -> 985.7 (delta 210.0)",
+    "Latest apply run: success (run_4474688004)"
+  ],
+  "analysis": {
+    "plan": {
+      "analysis_summary": "Current infrastructure shows moderate cost efficiency but has notable risks around availability and scalability. The RDS instance is over-provisioned relative to traffic patterns, and the lack of autoscaling exposes the system to potential downtime under load.",
+      "identified_issues": [
+        {
+          "issue": "Single AZ deployment for both EC2 and RDS",
+          "evidence": "RDS instance is not multi-AZ; EC2 has no autoscaling group",
+          "severity": "high"
+        },
+        {
+          "issue": "No autoscaling configured for EC2",
+          "evidence": "Known risks include 'no_autoscaling'",
+          "severity": "med"
+        },
+        {
+          "issue": "S3 bucket lacks default encryption",
+          "evidence": "default_encryption: false for uploads bucket",
+          "severity": "med"
+        }
+      ],
+      "optimization_plan": [
+        {
+          "action": "Implement EC2 autoscaling group",
+          "why": "Current setup cannot handle traffic spikes; peak multiplier of 3.2x observed",
+          "expected_impact": "Improves availability during traffic surges",
+          "risk": "low"
+        },
+        {
+          "action": "Enable RDS Multi-AZ deployment",
+          "why": "Single AZ deployment violates target uptime of 99.99%",
+          "expected_impact": "Reduces downtime risk significantly",
+          "risk": "med"
+        },
+        {
+          "action": "Enable default encryption on S3 bucket",
+          "why": "Security best practice and compliance requirement",
+          "expected_impact": "Improves data protection posture",
+          "risk": "low"
+        }
+      ],
+      "tradeoffs": [
+        {
+          "action": "Implement EC2 autoscaling",
+          "cost_change_usd_per_month": 75.0,
+          "uptime_impact": "+0.5% expected improvement",
+          "security_impact": "No negative impact",
+          "risk_score_0_to_10": 2.0
+        },
+        {
+          "action": "Enable RDS Multi-AZ",
+          "cost_change_usd_per_month": 130.0,
+          "uptime_impact": "+1.0% expected improvement",
+          "security_impact": "No negative impact",
+          "risk_score_0_to_10": 4.0
+        },
+        {
+          "action": "Enable S3 default encryption",
+          "cost_change_usd_per_month": 5.0,
+          "uptime_impact": "No impact",
+          "security_impact": "+1.0% security posture",
+          "risk_score_0_to_10": 1.0
+        }
+      ],
+      "metrics": {
+        "monthly_cost_before": 775.7,
+        "monthly_cost_after_estimate": 985.7,
+        "uptime_risk_before_0_to_10": 7.0,
+        "uptime_risk_after_0_to_10": 3.0,
+        "security_risk_before_0_to_10": 6.0,
+        "security_risk_after_0_to_10": 3.0
+      }
+    },
+    "simulation": {
+      "scenarios": [
+        {
+          "name": "traffic_spike_3x",
+          "baseline": {
+            "error_rate_percent": 4.2,
+            "latency_ms": 680.0
+          },
+          "after": {
+            "error_rate_percent": 0.7,
+            "latency_ms": 240.0
+          }
+        },
+        {
+          "name": "single_instance_failure",
+          "baseline": {
+            "outage_minutes": 18.0
+          },
+          "after": {
+            "outage_minutes": 2.0
+          }
+        }
+      ],
+      "cost": {
+        "monthly_cost_before": 775.7,
+        "monthly_cost_after_estimate": 985.7,
+        "delta_usd_per_month": 210.0
+      },
+      "risk": {
+        "uptime_risk_before_0_to_10": 5.0,
+        "uptime_risk_after_0_to_10": 3.0,
+        "security_risk_before_0_to_10": 3.0,
+        "security_risk_after_0_to_10": 3.0
+      }
+    },
+    "used_fallback": false,
+    "analyze_metadata": {
+      "model_id": "us.amazon.nova-2-lite-v1:0",
+      "aws_region": "us-east-1",
+      "analyze_mode": "live_bedrock",
+      "parse_retries_used": 0,
+      "used_fallback": false
+    }
+  },
+  "apply": {
+    "run_id": "run_4474688004",
+    "status": "success",
+    "steps": [
+      {
+        "step": 1,
+        "action": "open_console",
+        "result": "ok"
+      },
+      {
+        "step": 2,
+        "action": "resize_instance",
+        "result": "ok"
+      },
+      {
+        "step": 3,
+        "action": "enable_autoscaling",
+        "result": "ok"
+      },
+      {
+        "step": 4,
+        "action": "enable_s3_encryption",
+        "result": "ok"
+      }
+    ],
+    "notes": "Simulated execution completed for all requested actions."
+  }
+}

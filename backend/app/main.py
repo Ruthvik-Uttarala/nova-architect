@@ -5,14 +5,27 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
 
 from .agent import DEFAULT_MODEL_ID, DEFAULT_REGION, BedrockNovaAgent, build_fallback_plan
-from .schemas import AnalyzeMetadata, AnalyzeRequest, AnalyzeResponse, ApplyRequest, ApplyResponse, ApplyStep, Plan
+from .schemas import (
+    AnalyzeMetadata,
+    AnalyzeRequest,
+    AnalyzeResponse,
+    ApplyRequest,
+    ApplyResponse,
+    ApplyStep,
+    ArtifactReference,
+    Plan,
+    ReportRequest,
+    ReportResponse,
+    VoiceRequest,
+    VoiceResponse,
+)
 from .sim import run_simulation
 
 load_dotenv()
@@ -20,6 +33,8 @@ load_dotenv()
 app = FastAPI(title="NovaArchitect Phase 1 Backend", version="1.0.0")
 
 DATA_PATH = Path(__file__).resolve().parent / "data" / "infra_sample.json"
+DEFAULT_ARTIFACTS_DIR = Path(__file__).resolve().parents[1] / "artifacts"
+EVENT_HISTORY_FILE = "events_history.jsonl"
 
 SYSTEM_PROMPT = (
     "You are NovaArchitect Analyze Agent. "
@@ -65,6 +80,10 @@ OUTPUT_CONTRACT = {
 KNOWN_APPLY_ACTIONS = {"resize_instance", "enable_autoscaling", "enable_s3_encryption"}
 DEFAULT_APPLY_ACTIONS = ["resize_instance", "enable_autoscaling", "enable_s3_encryption"]
 
+_LAST_ANALYZE_RESPONSE: Optional[dict] = None
+_LAST_ANALYZE_GOAL: str = ""
+_LAST_APPLY_RESPONSE: Optional[dict] = None
+
 
 def _normalize_goal(goal: str) -> str:
     return " ".join(goal.strip().split())
@@ -103,6 +122,26 @@ def _is_live_bedrock_enabled() -> bool:
     return True
 
 
+def _artifact_dir() -> Path:
+    return Path(os.getenv("NOVA_ARTIFACTS_DIR", str(DEFAULT_ARTIFACTS_DIR)))
+
+
+def _best_effort_log_event(event_type: str, payload: Dict[str, Any]) -> None:
+    try:
+        directory = _artifact_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / EVENT_HISTORY_FILE
+        record = {
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "event_type": event_type,
+            "payload": payload,
+        }
+        with path.open("a", encoding="utf-8") as out:
+            out.write(json.dumps(record, ensure_ascii=True) + "\n")
+    except Exception:
+        return
+
+
 def _maybe_write_analyze_artifact(
     *,
     goal: str,
@@ -113,8 +152,7 @@ def _maybe_write_analyze_artifact(
         return
 
     try:
-        default_dir = Path(__file__).resolve().parents[1] / "artifacts"
-        artifact_dir = Path(os.getenv("ANALYZE_ARTIFACTS_DIR", str(default_dir)))
+        artifact_dir = _artifact_dir()
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -133,7 +171,6 @@ def _maybe_write_analyze_artifact(
         }
         artifact_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except Exception:
-        # Best-effort artifact writing only; never fail the analyze request.
         return
 
 
@@ -157,6 +194,153 @@ def _run_nova_act_apply(actions: List[str]) -> dict:
     from .nova_act_runner import run_apply
 
     return run_apply(actions)
+
+
+def _run_nova_sonic(
+    *,
+    transcript: str,
+    latest_goal: Optional[str],
+    latest_plan_summary: Optional[str],
+) -> Any:
+    # Lazy import keeps startup/test paths safe when optional voice path is unused.
+    from .nova_sonic_runner import run_voice
+
+    return run_voice(
+        transcript=transcript,
+        latest_goal=latest_goal,
+        latest_plan_summary=latest_plan_summary,
+    )
+
+
+def _voice_fallback_response(request: VoiceRequest, reason: str) -> VoiceResponse:
+    transcript = request.transcript or ""
+    normalized_goal = _normalize_goal(transcript or (request.latest_goal or ""))
+    if not normalized_goal:
+        normalized_goal = "Optimize cost, reliability, and security for the current infrastructure."
+    plan_context = _normalize_goal(request.latest_plan_summary or "")
+    if plan_context:
+        spoken_summary = f"Captured goal: {normalized_goal}. Prior plan context: {plan_context}"
+    else:
+        spoken_summary = f"Captured goal: {normalized_goal}. You can run Analyze now for a full validated plan."
+
+    model_id = os.getenv("NOVA_SONIC_MODEL_ID", "us.amazon.nova-sonic-v1:0")
+    region = os.getenv("NOVA_SONIC_REGION", os.getenv("AWS_REGION", DEFAULT_REGION))
+    return VoiceResponse.model_validate(
+        {
+            "transcript": transcript,
+            "normalized_goal": normalized_goal,
+            "spoken_summary_text": spoken_summary,
+            "voice_metadata": {
+                "model_id": model_id,
+                "aws_region": region,
+                "voice_mode": "fallback",
+                "used_fallback": True,
+            },
+        }
+    )
+
+
+def _cache_analyze_response(goal: str, response: AnalyzeResponse) -> dict:
+    global _LAST_ANALYZE_RESPONSE, _LAST_ANALYZE_GOAL
+
+    payload = response.model_dump()
+    _LAST_ANALYZE_RESPONSE = payload
+    _LAST_ANALYZE_GOAL = goal
+    metadata = payload.get("analyze_metadata") or {}
+    _best_effort_log_event(
+        "analyze",
+        {
+            "goal": goal,
+            "model_id": metadata.get("model_id", ""),
+            "aws_region": metadata.get("aws_region", ""),
+            "analyze_mode": metadata.get("analyze_mode", ""),
+            "parse_retries_used": metadata.get("parse_retries_used", 0),
+            "used_fallback": payload.get("used_fallback", False),
+        },
+    )
+    return payload
+
+
+def _cache_apply_response(response: ApplyResponse) -> dict:
+    global _LAST_APPLY_RESPONSE
+
+    payload = response.model_dump()
+    _LAST_APPLY_RESPONSE = payload
+    _best_effort_log_event(
+        "apply",
+        {
+            "run_id": payload["run_id"],
+            "status": payload["status"],
+            "steps_count": len(payload["steps"]),
+        },
+    )
+    return payload
+
+
+def _first_items(items: List[str], limit: int) -> str:
+    if not items:
+        return "none"
+    return ", ".join(items[:limit])
+
+
+def _build_executive_summary(goal: str, analyze_data: AnalyzeResponse, apply_data: Optional[ApplyResponse]) -> str:
+    cost = analyze_data.simulation.cost
+    risk = analyze_data.simulation.risk
+    issue_count = len(analyze_data.plan.identified_issues)
+    action_count = len(analyze_data.plan.optimization_plan)
+    base = (
+        f"For goal '{goal}', NovaArchitect identified {issue_count} issue(s) and proposed {action_count} action(s). "
+        f"Estimated monthly cost changes from {cost.monthly_cost_before:.1f} to {cost.monthly_cost_after_estimate:.1f} "
+        f"(delta {cost.delta_usd_per_month:.1f}). Uptime risk shifts from {risk.uptime_risk_before_0_to_10:.1f} "
+        f"to {risk.uptime_risk_after_0_to_10:.1f}, and security risk shifts from "
+        f"{risk.security_risk_before_0_to_10:.1f} to {risk.security_risk_after_0_to_10:.1f}."
+    )
+    if apply_data is not None:
+        base += f" Latest apply run status: {apply_data.status} (run_id {apply_data.run_id})."
+    return base
+
+
+def _build_report_markdown(
+    *,
+    report_id: str,
+    generated_at_utc: str,
+    goal: str,
+    executive_summary: str,
+    highlights: List[str],
+) -> str:
+    lines = [
+        f"# NovaArchitect Executive Summary ({report_id})",
+        "",
+        f"- Generated at (UTC): {generated_at_utc}",
+        f"- Goal: {goal}",
+        "",
+        "## Executive Summary",
+        executive_summary,
+        "",
+        "## Highlights",
+    ]
+    lines.extend([f"- {line}" for line in highlights])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_report_artifacts(
+    *,
+    report_id: str,
+    payload: Dict[str, Any],
+    markdown: str,
+) -> List[ArtifactReference]:
+    artifact_dir = _artifact_dir()
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    json_path = artifact_dir / f"{report_id}.json"
+    md_path = artifact_dir / f"{report_id}.md"
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    md_path.write_text(markdown, encoding="utf-8")
+    return [
+        ArtifactReference(label="Executive Summary (JSON)", file_path=str(json_path.resolve()), format="json"),
+        ArtifactReference(label="Executive Summary (Markdown)", file_path=str(md_path.resolve()), format="md"),
+    ]
 
 
 @app.get("/")
@@ -199,7 +383,6 @@ def analyze(request: AnalyzeRequest) -> dict:
                 used_fallback = detailed.used_fallback
                 parse_retries_used = detailed.parse_retries_used
             else:
-                # Backward-compatible fallback for mocked agents that only expose analyze().
                 plan, used_fallback = agent.analyze(system_text=SYSTEM_PROMPT, user_text=user_prompt, snapshot=snapshot)
                 parse_retries_used = 1 if used_fallback else 0
         except Exception as exc:
@@ -229,7 +412,122 @@ def analyze(request: AnalyzeRequest) -> dict:
         used_fallback=used_fallback,
         analyze_metadata=metadata,
     )
-    return response.model_dump()
+    return _cache_analyze_response(goal, response)
+
+
+@app.post("/voice", response_model=VoiceResponse)
+def voice(request: VoiceRequest) -> dict:
+    try:
+        raw = _run_nova_sonic(
+            transcript=request.transcript,
+            latest_goal=request.latest_goal,
+            latest_plan_summary=request.latest_plan_summary,
+        )
+        payload = raw.model_dump() if hasattr(raw, "model_dump") else raw
+        response = VoiceResponse.model_validate(payload)
+    except Exception as exc:
+        response = _voice_fallback_response(request, f"voice_exception:{exc.__class__.__name__}")
+
+    voice_payload = response.model_dump()
+    _best_effort_log_event(
+        "voice",
+        {
+            "transcript": voice_payload["transcript"][:300],
+            "normalized_goal": voice_payload["normalized_goal"][:300],
+            "voice_mode": voice_payload["voice_metadata"]["voice_mode"],
+            "used_fallback": voice_payload["voice_metadata"]["used_fallback"],
+        },
+    )
+    return voice_payload
+
+
+@app.post("/report", response_model=ReportResponse)
+def report(request: ReportRequest) -> dict:
+    request_analyze = request.analyze_response
+    request_apply = request.apply_run
+    analyze_payload = request_analyze.model_dump() if request_analyze is not None else _LAST_ANALYZE_RESPONSE
+    apply_payload = request_apply.model_dump() if request_apply is not None else _LAST_APPLY_RESPONSE
+
+    if analyze_payload is None:
+        raise HTTPException(status_code=400, detail="No analyze data available. Run /analyze first or supply analyze_response.")
+
+    analyze_data = AnalyzeResponse.model_validate(analyze_payload)
+    apply_data = ApplyResponse.model_validate(apply_payload) if apply_payload is not None else None
+
+    goal = _normalize_goal(request.goal or _LAST_ANALYZE_GOAL)
+    if not goal:
+        goal = "Infrastructure optimization"
+
+    executive_summary = _build_executive_summary(goal, analyze_data, apply_data)
+    highlights = [
+        f"Analysis summary: {analyze_data.plan.analysis_summary}",
+        f"Top issues: {_first_items([x.issue for x in analyze_data.plan.identified_issues], 3)}",
+        f"Recommended actions: {_first_items([x.action for x in analyze_data.plan.optimization_plan], 3)}",
+        (
+            "Cost view: "
+            f"{analyze_data.simulation.cost.monthly_cost_before:.1f} -> "
+            f"{analyze_data.simulation.cost.monthly_cost_after_estimate:.1f} "
+            f"(delta {analyze_data.simulation.cost.delta_usd_per_month:.1f})"
+        ),
+    ]
+    if apply_data is not None:
+        highlights.append(f"Latest apply run: {apply_data.status} ({apply_data.run_id})")
+
+    source = "latest_cached"
+    if request.goal is not None or request_analyze is not None or request_apply is not None:
+        source = "request_payload" if request_analyze is not None else "mixed"
+
+    digest_source = (
+        f"{goal}|{analyze_data.plan.analysis_summary}|"
+        f"{analyze_data.simulation.cost.monthly_cost_before:.2f}|"
+        f"{apply_data.status if apply_data is not None else 'none'}"
+    )
+    report_id = f"report_{hashlib.sha1(digest_source.encode('utf-8')).hexdigest()[:10]}"
+    generated_at_utc = datetime.now(timezone.utc).isoformat()
+
+    report_payload = {
+        "report_id": report_id,
+        "generated_at_utc": generated_at_utc,
+        "goal": goal,
+        "executive_summary": executive_summary,
+        "highlights": highlights,
+        "analysis": analyze_data.model_dump(),
+        "apply": apply_data.model_dump() if apply_data is not None else None,
+    }
+    markdown_text = _build_report_markdown(
+        report_id=report_id,
+        generated_at_utc=generated_at_utc,
+        goal=goal,
+        executive_summary=executive_summary,
+        highlights=highlights,
+    )
+
+    artifact_refs: List[ArtifactReference] = []
+    try:
+        artifact_refs = _write_report_artifacts(report_id=report_id, payload=report_payload, markdown=markdown_text)
+    except Exception:
+        artifact_refs = []
+
+    response = ReportResponse(
+        report_id=report_id,
+        generated_at_utc=generated_at_utc,
+        goal=goal,
+        executive_summary=executive_summary,
+        highlights=highlights,
+        artifact_refs=artifact_refs,
+        source=source,
+    )
+    response_payload = response.model_dump()
+    _best_effort_log_event(
+        "report",
+        {
+            "report_id": report_id,
+            "goal": goal,
+            "source": source,
+            "artifact_count": len(artifact_refs),
+        },
+    )
+    return response_payload
 
 
 @app.post("/apply", response_model=ApplyResponse)
@@ -264,7 +562,7 @@ def apply_changes(request: ApplyRequest) -> dict:
             notes = "No executable known actions were provided."
 
         response = ApplyResponse(run_id=run_id, status=status, steps=steps, notes=notes)
-        return response.model_dump()
+        return _cache_apply_response(response)
 
     if not os.getenv("NOVA_ACT_API_KEY", "").strip():
         response = ApplyResponse(
@@ -273,7 +571,7 @@ def apply_changes(request: ApplyRequest) -> dict:
             steps=[],
             notes="NOVA_ACT_API_KEY is required when ENABLE_NOVA_ACT=1.",
         )
-        return response.model_dump()
+        return _cache_apply_response(response)
 
     try:
         raw_result = _run_nova_act_apply(effective_actions)
@@ -284,7 +582,7 @@ def apply_changes(request: ApplyRequest) -> dict:
             steps=[],
             notes=f"Nova Act execution failed before completion: {exc.__class__.__name__}",
         )
-        return response.model_dump()
+        return _cache_apply_response(response)
 
     try:
         validated = ApplyResponse.model_validate(raw_result)
@@ -295,4 +593,4 @@ def apply_changes(request: ApplyRequest) -> dict:
             steps=[],
             notes="Nova Act runner returned invalid response schema.",
         )
-    return validated.model_dump()
+    return _cache_apply_response(validated)

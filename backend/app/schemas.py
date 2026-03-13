@@ -117,6 +117,35 @@ class AnalyzeResponse(BaseModel):
     analyze_metadata: Optional[AnalyzeMetadata] = None
 
 
+VoiceMode = Literal["live_sonic", "fallback"]
+
+
+class VoiceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transcript: str
+    latest_goal: Optional[str] = None
+    latest_plan_summary: Optional[str] = None
+
+
+class VoiceMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str
+    aws_region: str
+    voice_mode: VoiceMode
+    used_fallback: bool
+
+
+class VoiceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transcript: str
+    normalized_goal: str
+    spoken_summary_text: str
+    voice_metadata: VoiceMetadata
+
+
 ApplyStatus = Literal["success", "partial", "failed"]
 
 
@@ -141,3 +170,31 @@ class ApplyResponse(BaseModel):
     status: ApplyStatus
     steps: List[ApplyStep]
     notes: str
+
+
+class ArtifactReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    file_path: str
+    format: Literal["json", "md", "txt", "jsonl"]
+
+
+class ReportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goal: Optional[str] = None
+    analyze_response: Optional[AnalyzeResponse] = None
+    apply_run: Optional[ApplyResponse] = None
+
+
+class ReportResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    report_id: str
+    generated_at_utc: str
+    goal: str
+    executive_summary: str
+    highlights: List[str]
+    artifact_refs: List[ArtifactReference]
+    source: Literal["request_payload", "latest_cached", "mixed"]
