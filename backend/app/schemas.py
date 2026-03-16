@@ -95,6 +95,7 @@ class AnalyzeRequest(BaseModel):
     goal: str
     snapshot_mode: Literal["sample", "live_aws"] = "sample"
     discovered_snapshot: Optional[Dict[str, Any]] = None
+    demo_mode: bool = False
 
 
 AnalyzeMode = Literal["live_bedrock", "fallback"]

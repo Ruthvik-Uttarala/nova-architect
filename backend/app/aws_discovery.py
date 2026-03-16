@@ -6,10 +6,28 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 DEFAULT_DISCOVERY_TTL_SECONDS = 120
 _DISCOVERY_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    try:
+        value = int(raw)
+        return max(1, value)
+    except ValueError:
+        return default
+
+
+def _discovery_client_config() -> Config:
+    return Config(
+        connect_timeout=_int_env("DISCOVERY_CONNECT_TIMEOUT", 3),
+        read_timeout=_int_env("DISCOVERY_READ_TIMEOUT", 8),
+        retries={"max_attempts": 2, "mode": "standard"},
+    )
 
 
 def _ttl_seconds() -> int:
@@ -90,7 +108,7 @@ def discover_live_snapshot(
     def _client(service_name: str, client_region: str) -> Any:
         if client_factory is not None:
             return client_factory(service_name, client_region)
-        return boto3.client(service_name, region_name=client_region)
+        return boto3.client(service_name, region_name=client_region, config=_discovery_client_config())
 
     warnings: List[str] = []
     partial_failures = 0

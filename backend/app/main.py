@@ -35,7 +35,7 @@ from .schemas import (
 from .aws_discovery import discover_live_snapshot
 from .policy_engine import evaluate_policy
 from .real_executor import execute_aws_api_safe_tag, execute_console_safe
-from .sim import run_simulation
+from .sim import calculate_baseline_metrics, run_simulation
 
 load_dotenv()
 
@@ -116,6 +116,107 @@ def _build_user_prompt(goal: str, snapshot: dict) -> str:
         json.dumps(OUTPUT_CONTRACT, separators=(",", ":"), ensure_ascii=True),
     ]
     return "\n".join(prompt_parts)
+
+
+def _build_sample_demo_plan(snapshot: dict, reason: str) -> Plan:
+    baseline = calculate_baseline_metrics(snapshot)
+    monthly_cost_before = float(baseline.monthly_cost_before)
+    monthly_cost_after = round(monthly_cost_before * 0.82, 2) if monthly_cost_before > 0 else 0.0
+    uptime_before = float(baseline.uptime_risk_before_0_to_10)
+    security_before = float(baseline.security_risk_before_0_to_10)
+    uptime_after = max(0.0, round(uptime_before - 2.0, 2))
+    security_after = max(0.0, round(security_before - 2.0, 2))
+    monthly_delta = round(monthly_cost_after - monthly_cost_before, 2)
+
+    return Plan.model_validate(
+        {
+            "analysis_summary": (
+                "Sample demo analysis identified clear rightsizing and scaling inefficiencies. "
+                f"Deterministic demo optimization applied ({reason}) to preserve stability while reducing recurring cost."
+            ),
+            "identified_issues": [
+                {
+                    "issue": "EC2 instance is overprovisioned for observed utilization",
+                    "evidence": "CPU p50 and p95 are well below capacity for current instance size.",
+                    "severity": "med",
+                },
+                {
+                    "issue": "Traffic peak handling risk due to missing autoscaling controls",
+                    "evidence": "Peak multiplier exceeds 2x while known_risks include no_autoscaling.",
+                    "severity": "high",
+                },
+                {
+                    "issue": "S3 default encryption is not enabled",
+                    "evidence": "Snapshot contains at least one S3 bucket with default_encryption=false.",
+                    "severity": "high",
+                },
+            ],
+            "optimization_plan": [
+                {
+                    "action": "Right-size primary EC2 workload from t3.large to t3.medium profile",
+                    "why": "Observed utilization supports smaller instance without throughput risk.",
+                    "expected_impact": "Reduces compute spend while preserving normal request latency.",
+                    "risk": "low",
+                },
+                {
+                    "action": "Enable autoscaling policy for burst traffic bands",
+                    "why": "Prevents overpaying during steady state and avoids outage during 3x traffic spikes.",
+                    "expected_impact": "Lower average cost and improved resilience under demand spikes.",
+                    "risk": "med",
+                },
+                {
+                    "action": "Enable default S3 encryption and tag compliance controls",
+                    "why": "Addresses security posture gap with minimal operational overhead.",
+                    "expected_impact": "Reduced security risk with no material monthly cost increase.",
+                    "risk": "low",
+                },
+            ],
+            "tradeoffs": [
+                {
+                    "action": "EC2 right-sizing",
+                    "cost_change_usd_per_month": round(monthly_delta * 0.55, 2),
+                    "uptime_impact": "neutral",
+                    "security_impact": "neutral",
+                    "risk_score_0_to_10": 2.5,
+                },
+                {
+                    "action": "Autoscaling enablement",
+                    "cost_change_usd_per_month": round(monthly_delta * 0.35, 2),
+                    "uptime_impact": "positive",
+                    "security_impact": "neutral",
+                    "risk_score_0_to_10": 3.0,
+                },
+                {
+                    "action": "S3 encryption default",
+                    "cost_change_usd_per_month": round(monthly_delta * 0.10, 2),
+                    "uptime_impact": "neutral",
+                    "security_impact": "positive",
+                    "risk_score_0_to_10": 1.5,
+                },
+            ],
+            "metrics": {
+                "monthly_cost_before": monthly_cost_before,
+                "monthly_cost_after_estimate": monthly_cost_after,
+                "uptime_risk_before_0_to_10": uptime_before,
+                "uptime_risk_after_0_to_10": uptime_after,
+                "security_risk_before_0_to_10": security_before,
+                "security_risk_after_0_to_10": security_after,
+            },
+        }
+    )
+
+
+def _ensure_sample_demo_plan(plan: Plan, snapshot: dict, used_fallback: bool) -> Plan:
+    weak_plan = (
+        used_fallback
+        or len(plan.identified_issues) == 0
+        or len(plan.optimization_plan) == 0
+        or plan.metrics.monthly_cost_after_estimate >= plan.metrics.monthly_cost_before
+    )
+    if not weak_plan:
+        return plan
+    reason = "fallback_or_non_optimized_output"
+    return _build_sample_demo_plan(snapshot, reason)
 
 
 def _is_live_bedrock_enabled() -> bool:
@@ -469,7 +570,11 @@ def analyze(request: AnalyzeRequest) -> dict:
     used_fallback = False
     plan: Plan
 
-    if not live_enabled:
+    if request.snapshot_mode == "sample" and request.demo_mode:
+        used_fallback = True
+        parse_retries_used = 0
+        plan = _build_sample_demo_plan(snapshot, "sample_demo_mode")
+    elif not live_enabled:
         used_fallback = True
         plan = build_fallback_plan(snapshot, "live_bedrock_disabled")
     else:
@@ -495,6 +600,9 @@ def analyze(request: AnalyzeRequest) -> dict:
         validated_plan = Plan.model_validate(plan.model_dump())
     except ValidationError as exc:
         raise HTTPException(status_code=502, detail={"error": "plan validation failed", "details": exc.errors()}) from exc
+
+    if request.snapshot_mode == "sample" and request.demo_mode:
+        validated_plan = _ensure_sample_demo_plan(validated_plan, snapshot, used_fallback)
 
     simulation = run_simulation(snapshot, validated_plan)
     analyze_mode = "fallback" if (used_fallback or not live_enabled) else "live_bedrock"
