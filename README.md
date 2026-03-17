@@ -286,6 +286,4 @@ This project is intended to demonstrate how Amazon Nova can move cloud operation
 
 Built by Ruthvik Uttarala.
 
-## License
 
-Add your preferred license here.
